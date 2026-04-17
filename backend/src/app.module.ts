@@ -25,9 +25,9 @@ import { GameModule } from './modules/game/game.module';
       },
     }),
     PubSubModule,
-    MemoryStore,
     UserModule,
     GameModule,
   ],
+  providers: [MemoryStore],
 })
 export class AppModule {}
