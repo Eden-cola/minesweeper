@@ -8,6 +8,7 @@
     "start:prod": "node dist/main",
     "build": "nest build",
     "lint": "eslint src --ext .ts",
+    "test:e2e": "bun test --filter e2e",
     "graphql:generate": "graphql-codegen",
     "graphql:validate": "node -e \"const { printSchema, buildSchema } = require('graphql'); const fs = require('fs'); const schema = buildSchema(fs.readFileSync('./src/schema.gql', 'utf8')); console.log('GraphQL schema is valid');\""
   },

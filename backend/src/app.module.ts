@@ -3,7 +3,7 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { join } from 'path';
 import { PubSubModule } from './pubsub.module';
-import { MemoryStore } from './stores/memory.store';
+import { MemoryStoreModule } from './stores/memory.store';
 import { UserModule } from './modules/user/user.module';
 import { GameModule } from './modules/game/game.module';
 
@@ -25,9 +25,9 @@ import { GameModule } from './modules/game/game.module';
       },
     }),
     PubSubModule,
+    MemoryStoreModule,
     UserModule,
     GameModule,
   ],
-  providers: [MemoryStore],
 })
 export class AppModule {}
