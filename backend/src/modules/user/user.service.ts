@@ -1,41 +1,32 @@
 import { Injectable } from '@nestjs/common';
-import { PrismaService } from '../../prisma.service';
-import { User } from '@prisma/client';
+import { MemoryStore, UserData } from '../../stores/memory.store';
 
 @Injectable()
 export class UserService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private store: MemoryStore) {}
 
-  async findById(id: string): Promise<User | null> {
-    return this.prisma.user.findUnique({ where: { id } });
+  findById(id: string): UserData | null {
+    return this.store.getUser(id) ?? null;
   }
 
-  async findOrCreate(id: string, name: string): Promise<User> {
-    let user = await this.prisma.user.findUnique({ where: { id } });
+  findOrCreate(id: string, name: string): UserData {
+    const existing = this.store.getUser(id);
+    if (existing) {
+      return existing;
+    }
+    return this.store.createUser(id, name);
+  }
+
+  updateScore(userId: string, scoreChange: number): UserData {
+    const user = this.store.updateUserScore(userId, scoreChange);
     if (!user) {
-      user = await this.prisma.user.create({
-        data: { id, name },
-      });
+      throw new Error('User not found');
     }
     return user;
   }
 
-  async updateScore(userId: string, scoreChange: number): Promise<User> {
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        score: {
-          increment: scoreChange,
-        },
-      },
-    });
-  }
-
-  async getScore(userId: string): Promise<number> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { score: true },
-    });
+  getScore(userId: string): number {
+    const user = this.store.getUser(userId);
     return user?.score ?? 0;
   }
 }

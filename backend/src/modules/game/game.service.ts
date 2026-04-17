@@ -2,9 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { Inject } from '@nestjs/common';
 import { PUB_SUB } from '../../pubsub.module';
 import { PubSub } from 'graphql-subscriptions';
-import { PrismaService } from '../../prisma.service';
+import { MemoryStore, GameData, CellData, PlayerData } from '../../stores/memory.store';
 import { UserService } from '../user/user.service';
-import { Cell, Game } from '@prisma/client';
 
 export enum GameStatus {
   WAITING = 'WAITING',
@@ -13,7 +12,7 @@ export enum GameStatus {
   ABANDONED = 'ABANDONED',
 }
 
-export interface CellData {
+export interface CellDataOutput {
   row: number;
   col: number;
   isRevealed: boolean;
@@ -22,15 +21,15 @@ export interface CellData {
   adjacentMines: number;
 }
 
-export interface GameWithCells extends Game {
-  cells: Cell[][];
+export interface GameWithCells extends GameData {
+  cells: CellDataOutput[][];
 }
 
 @Injectable()
 export class GameService {
   constructor(
     @Inject(PUB_SUB) private pubSub: PubSub,
-    private prisma: PrismaService,
+    private store: MemoryStore,
     private userService: UserService,
   ) {}
 
@@ -100,31 +99,45 @@ export class GameService {
   }
 
   // Convert database cells to 2D array format
-  private cellsTo2DArray(cells: Cell[], rows: number, cols: number): Cell[][] {
-    const grid: Cell[][] = Array(rows)
+  private cellsTo2DArray(cells: CellData[], rows: number, cols: number): CellDataOutput[][] {
+    const grid: CellDataOutput[][] = Array(rows)
       .fill(null)
-      .map(() => Array(cols).fill(null) as Cell[]);
+      .map((_, r) =>
+        Array(cols)
+          .fill(null)
+          .map((__, c) => ({
+            row: r,
+            col: c,
+            isRevealed: false,
+            isMine: false,
+            isFlagged: false,
+            adjacentMines: 0,
+          })),
+      );
 
     for (const cell of cells) {
-      grid[cell.row][cell.col] = cell;
+      grid[cell.row][cell.col] = {
+        row: cell.row,
+        col: cell.col,
+        isRevealed: cell.isRevealed,
+        isMine: cell.isMine,
+        isFlagged: cell.isFlagged,
+        adjacentMines: cell.adjacentMines,
+      };
     }
 
     return grid;
   }
 
   // Get game with cells formatted as 2D array
-  async getGameWithCells(
+  private getGameWithCells(
     gameId: string,
-  ): Promise<{ game: Game; cells: Cell[][] } | null> {
-    const game = await this.prisma.game.findUnique({
-      where: { id: gameId },
-      include: { cells: true },
-    });
-
+  ): { game: GameData; cells: CellDataOutput[][] } | null {
+    const game = this.store.getGame(gameId);
     if (!game) return null;
 
-    const cells = this.cellsTo2DArray(game.cells, game.rows, game.cols);
-    return { game, cells };
+    const cells = this.store.getCellsByGameId(gameId);
+    return { game, cells: this.cellsTo2DArray(cells, game.rows, game.cols) };
   }
 
   async createGame(
@@ -136,46 +149,31 @@ export class GameService {
     // Generate board data
     const board = this.generateBoard(rows, cols, mines);
 
-    // Create game with cells in a transaction
-    const game = await this.prisma.$transaction(async (tx) => {
-      // Create game
-      const newGame = await tx.game.create({
-        data: {
-          rows,
-          cols,
-          mines,
-          status: GameStatus.WAITING,
-        },
-      });
+    // Create game
+    const game = this.store.createGame(rows, cols, mines);
 
-      // Create all cells
-      const cellData = [];
-      for (let r = 0; r < rows; r++) {
-        for (let c = 0; c < cols; c++) {
-          cellData.push({
-            row: r,
-            col: c,
-            isMine: board[r][c].isMine,
-            adjacentMines: board[r][c].adjacentMines,
-            gameId: newGame.id,
-          });
-        }
+    // Create all cells
+    const cellData: Omit<CellData, 'id'>[] = [];
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        cellData.push({
+          row: r,
+          col: c,
+          isMine: board[r][c].isMine,
+          adjacentMines: board[r][c].adjacentMines,
+          isRevealed: false,
+          isFlagged: false,
+          gameId: game.id,
+        });
       }
-      await tx.cell.createMany({ data: cellData });
+    }
+    this.store.createCells(cellData);
 
-      // Create player association
-      await tx.player.create({
-        data: {
-          userId,
-          gameId: newGame.id,
-        },
-      });
+    // Create player association
+    this.store.createPlayer(userId, game.id);
 
-      return newGame;
-    });
-
-    // Fetch full game with cells
-    const result = await this.getGameWithCells(game.id);
+    // Get full game result
+    const result = this.getGameWithCells(game.id);
 
     // Publish game state update
     this.pubSub.publish('gameStateUpdated', {
@@ -190,20 +188,20 @@ export class GameService {
   }
 
   // Format game for GraphQL response
-  private formatGame(result: { game: Game; cells: Cell[][] }): GameWithCells {
+  private formatGame(result: { game: GameData; cells: CellDataOutput[][] }): GameWithCells {
     return {
       ...result.game,
-      cells: result.cells.map((row) =>
-        row.map((cell) => ({
-          row: cell.row,
-          col: cell.col,
-          isRevealed: cell.isRevealed,
-          isMine: cell.isMine,
-          isFlagged: cell.isFlagged,
-          adjacentMines: cell.adjacentMines,
-        })),
-      ),
+      cells: result.cells,
     } as unknown as GameWithCells;
+  }
+
+  // Find or create player for user in game
+  private findOrCreatePlayer(userId: string, gameId: string): PlayerData {
+    let player = this.store.getPlayerByUserAndGame(userId, gameId);
+    if (!player) {
+      player = this.store.createPlayer(userId, gameId);
+    }
+    return player;
   }
 
   // Reveal a cell and handle cascading
@@ -213,175 +211,137 @@ export class GameService {
     row: number,
     col: number,
   ): Promise<{
-    cell: CellData;
+    cell: CellDataOutput;
     scoreChange: number;
     game: GameWithCells;
   }> {
-    const result = await this.prisma.$transaction(async (tx) => {
-      // Get game and verify it exists
-      const game = await tx.game.findUnique({
-        where: { id: gameId },
-        include: { cells: true },
-      });
+    // Get game and verify it exists
+    const game = this.store.getGame(gameId);
+    if (!game) throw new Error('Game not found');
+    if (game.status !== GameStatus.WAITING && game.status !== GameStatus.PLAYING) {
+      throw new Error('Game is not in progress');
+    }
 
-      if (!game) throw new Error('Game not found');
-      if (game.status !== GameStatus.WAITING && game.status !== GameStatus.PLAYING) {
-        throw new Error('Game is not in progress');
+    // Find or create player
+    const player = this.findOrCreatePlayer(userId, gameId);
+
+    // Get cells for this game
+    const allCells = this.store.getCellsByGameId(gameId);
+    const cell = allCells.find((c) => c.row === row && c.col === col);
+    if (!cell) throw new Error('Cell not found');
+    if (cell.isRevealed) throw new Error('Cell already revealed');
+
+    let scoreChange = 0;
+    const revealedCells: CellData[] = [];
+
+    // Handle mine hit
+    if (cell.isMine) {
+      scoreChange = -10;
+      this.store.updateCell(cell.id, { isRevealed: true });
+      revealedCells.push({ ...cell, isRevealed: true });
+
+      // Update game status to ABANDONED
+      this.store.updateGameStatus(gameId, GameStatus.ABANDONED);
+    } else {
+      // Update game to PLAYING if it was WAITING
+      if (game.status === GameStatus.WAITING) {
+        this.store.updateGameStatus(gameId, GameStatus.PLAYING);
       }
 
-      // Find or create player
-      let player = await tx.player.findFirst({
-        where: { userId, gameId },
-      });
+      // BFS/flood-fill to reveal empty cells
+      const cellsToReveal: { row: number; col: number }[] = [{ row, col }];
+      const visited = new Set<string>();
+      visited.add(`${row},${col}`);
 
-      if (!player) {
-        player = await tx.player.create({
-          data: { userId, gameId },
-        });
-      }
+      while (cellsToReveal.length > 0) {
+        const { row: r, col: c } = cellsToReveal.shift()!;
+        const currentCell = allCells.find(
+          (cell) => cell.row === r && cell.col === c,
+        );
 
-      // Find the cell
-      const cell = game.cells.find((c) => c.row === row && c.col === col);
-      if (!cell) throw new Error('Cell not found');
-      if (cell.isRevealed) throw new Error('Cell already revealed');
-
-      let scoreChange = 0;
-      const revealedCells: Cell[] = [];
-
-      // Handle mine hit
-      if (cell.isMine) {
-        scoreChange = -10;
-        await tx.cell.update({
-          where: { id: cell.id },
-          data: { isRevealed: true },
-        });
-        revealedCells.push({ ...cell, isRevealed: true });
-
-        // Update game status to ABANDONED
-        await tx.game.update({
-          where: { id: gameId },
-          data: { status: GameStatus.ABANDONED },
-        });
-      } else {
-        // Update game to PLAYING if it was WAITING
-        if (game.status === GameStatus.WAITING) {
-          await tx.game.update({
-            where: { id: gameId },
-            data: { status: GameStatus.PLAYING },
-          });
+        if (!currentCell || currentCell.isRevealed || currentCell.isMine) {
+          continue;
         }
 
-        // BFS/flood-fill to reveal empty cells
-        const cellsToReveal: { row: number; col: number }[] = [{ row, col }];
-        const visited = new Set<string>();
-        visited.add(`${row},${col}`);
+        // Reveal this cell
+        this.store.updateCell(currentCell.id, { isRevealed: true });
+        revealedCells.push({ ...currentCell, isRevealed: true });
+        scoreChange += 1; // +1 for each revealed empty cell
 
-        while (cellsToReveal.length > 0) {
-          const { row: r, col: c } = cellsToReveal.shift()!;
-          const currentCell = game.cells.find(
-            (cell) => cell.row === r && cell.col === c,
-          );
-
-          if (!currentCell || currentCell.isRevealed || currentCell.isMine) {
-            continue;
-          }
-
-          // Reveal this cell
-          await tx.cell.update({
-            where: { id: currentCell.id },
-            data: { isRevealed: true },
-          });
-          revealedCells.push({ ...currentCell, isRevealed: true });
-          scoreChange += 1; // +1 for each revealed empty cell
-
-          // If it's an empty cell (no adjacent mines), add neighbors
-          if (currentCell.adjacentMines === 0) {
-            const directions = [
-              [-1, -1],
-              [-1, 0],
-              [-1, 1],
-              [0, -1],
-              [0, 1],
-              [1, -1],
-              [1, 0],
-              [1, 1],
-            ];
-            for (const [dr, dc] of directions) {
-              const nr = r + dr;
-              const nc = c + dc;
-              const key = `${nr},${nc}`;
-              if (
-                !visited.has(key) &&
-                nr >= 0 &&
-                nr < game.rows &&
-                nc >= 0 &&
-                nc < game.cols
-              ) {
-                visited.add(key);
-                cellsToReveal.push({ row: nr, col: nc });
-              }
+        // If it's an empty cell (no adjacent mines), add neighbors
+        if (currentCell.adjacentMines === 0) {
+          const directions = [
+            [-1, -1],
+            [-1, 0],
+            [-1, 1],
+            [0, -1],
+            [0, 1],
+            [1, -1],
+            [1, 0],
+            [1, 1],
+          ];
+          for (const [dr, dc] of directions) {
+            const nr = r + dr;
+            const nc = c + dc;
+            const key = `${nr},${nc}`;
+            if (
+              !visited.has(key) &&
+              nr >= 0 &&
+              nr < game.rows &&
+              nc >= 0 &&
+              nc < game.cols
+            ) {
+              visited.add(key);
+              cellsToReveal.push({ row: nr, col: nc });
             }
           }
         }
-
-        // Check win condition - all non-mine cells revealed
-        const totalNonMineCells = game.rows * game.cols - game.mines;
-        const revealedNonMineCells = revealedCells.filter(
-          (c) => !c.isMine,
-        ).length;
-        const existingRevealed = game.cells.filter(
-          (c) => c.isRevealed && !c.isMine,
-        ).length;
-
-        if (existingRevealed + revealedNonMineCells >= totalNonMineCells) {
-          await tx.game.update({
-            where: { id: gameId },
-            data: { status: GameStatus.COMPLETED },
-          });
-        }
       }
 
-      // Update player score
-      if (scoreChange !== 0) {
-        await tx.player.update({
-          where: { id: player.id },
-          data: { score: { increment: scoreChange } },
-        });
-        await this.userService.updateScore(userId, scoreChange);
-      }
+      // Check win condition - all non-mine cells revealed
+      const totalNonMineCells = game.rows * game.cols - game.mines;
+      const revealedNonMineCells = revealedCells.filter(
+        (c) => !c.isMine,
+      ).length;
+      const existingRevealed = allCells.filter(
+        (c) => c.isRevealed && !c.isMine,
+      ).length;
 
-      return {
-        cell,
-        revealedCells,
-        scoreChange,
-        game,
-        player,
-      };
-    });
+      if (existingRevealed + revealedNonMineCells >= totalNonMineCells) {
+        this.store.updateGameStatus(gameId, GameStatus.COMPLETED);
+      }
+    }
+
+    // Update player score
+    if (scoreChange !== 0) {
+      this.store.updatePlayerScore(player.id, scoreChange);
+      this.userService.updateScore(userId, scoreChange);
+    }
 
     // Get updated game state
-    const gameResult = await this.getGameWithCells(gameId);
+    const gameResult = this.getGameWithCells(gameId);
+    if (!gameResult) throw new Error('Game not found after update');
 
     // Publish cell revealed events
-    for (const cell of result.revealedCells) {
+    for (const revealedCell of revealedCells) {
       this.pubSub.publish('cellRevealed', {
         cellRevealed: {
           gameId,
           cell: {
-            row: cell.row,
-            col: cell.col,
+            row: revealedCell.row,
+            col: revealedCell.col,
             isRevealed: true,
-            isMine: cell.isMine,
-            isFlagged: cell.isFlagged,
-            adjacentMines: cell.adjacentMines,
+            isMine: revealedCell.isMine,
+            isFlagged: revealedCell.isFlagged,
+            adjacentMines: revealedCell.adjacentMines,
           },
           revealedBy: {
-            id: result.player.id,
-            userId: result.player.userId,
-            score: result.player.score + result.scoreChange,
-            joinedAt: result.player.joinedAt,
+            id: player.id,
+            userId: player.userId,
+            score: player.score + scoreChange,
+            joinedAt: player.joinedAt,
           },
-          scoreChange: result.scoreChange,
+          scoreChange: scoreChange,
           timestamp: new Date(),
         },
       });
@@ -391,22 +351,22 @@ export class GameService {
     this.pubSub.publish('gameStateUpdated', {
       gameStateUpdated: {
         gameId,
-        game: this.formatGame(gameResult!),
+        game: this.formatGame(gameResult),
         timestamp: new Date(),
       },
     });
 
     return {
       cell: {
-        row: result.cell.row,
-        col: result.cell.col,
+        row: cell.row,
+        col: cell.col,
         isRevealed: true,
-        isMine: result.cell.isMine,
-        isFlagged: result.cell.isFlagged,
-        adjacentMines: result.cell.adjacentMines,
+        isMine: cell.isMine,
+        isFlagged: cell.isFlagged,
+        adjacentMines: cell.adjacentMines,
       },
-      scoreChange: result.scoreChange,
-      game: this.formatGame(gameResult!),
+      scoreChange,
+      game: this.formatGame(gameResult),
     };
   }
 
@@ -417,71 +377,55 @@ export class GameService {
     row: number,
     col: number,
   ): Promise<GameWithCells> {
-    await this.prisma.$transaction(async (tx) => {
-      // Get game
-      const currentGame = await tx.game.findUnique({
-        where: { id: gameId },
-        include: { cells: true },
-      });
+    // Get game
+    const currentGame = this.store.getGame(gameId);
+    if (!currentGame) throw new Error('Game not found');
+    if (currentGame.status === GameStatus.COMPLETED || currentGame.status === GameStatus.ABANDONED) {
+      throw new Error('Game has ended');
+    }
 
-      if (!currentGame) throw new Error('Game not found');
-      if (currentGame.status === GameStatus.COMPLETED || currentGame.status === GameStatus.ABANDONED) {
-        throw new Error('Game has ended');
-      }
+    // Find or create player
+    this.findOrCreatePlayer(userId, gameId);
 
-      // Find or create player
-      let player = await tx.player.findFirst({
-        where: { userId, gameId },
-      });
+    // Find the cell
+    const allCells = this.store.getCellsByGameId(gameId);
+    const cell = allCells.find((c) => c.row === row && c.col === col);
+    if (!cell) throw new Error('Cell not found');
+    if (cell.isRevealed) throw new Error('Cannot flag a revealed cell');
 
-      if (!player) {
-        player = await tx.player.create({
-          data: { userId, gameId },
-        });
-      }
-
-      // Find the cell
-      const cell = currentGame.cells.find((c) => c.row === row && c.col === col);
-      if (!cell) throw new Error('Cell not found');
-      if (cell.isRevealed) throw new Error('Cannot flag a revealed cell');
-
-      // Toggle flag
-      await tx.cell.update({
-        where: { id: cell.id },
-        data: { isFlagged: !cell.isFlagged },
-      });
-
-      return currentGame;
-    });
+    // Toggle flag
+    this.store.updateCell(cell.id, { isFlagged: !cell.isFlagged });
 
     // Get updated game state
-    const result = await this.getGameWithCells(gameId);
+    const result = this.getGameWithCells(gameId);
+    if (!result) throw new Error('Game not found');
 
     // Publish game state update
     this.pubSub.publish('gameStateUpdated', {
       gameStateUpdated: {
         gameId,
-        game: this.formatGame(result!),
+        game: this.formatGame(result),
         timestamp: new Date(),
       },
     });
 
-    return this.formatGame(result!);
+    return this.formatGame(result);
   }
 
   async getGame(gameId: string): Promise<GameWithCells | null> {
-    const result = await this.getGameWithCells(gameId);
+    const result = this.getGameWithCells(gameId);
     if (!result) return null;
     return this.formatGame(result);
   }
 
   async getUserGames(userId: string): Promise<GameWithCells[]> {
-    const players = await this.prisma.player.findMany({
-      where: { userId },
-      include: { game: { include: { cells: true } } },
-      orderBy: { joinedAt: 'desc' },
+    const games = this.store.getGamesByUserId(userId);
+    return games.map((game) => {
+      const cells = this.store.getCellsByGameId(game.id);
+      return this.formatGame({
+        game,
+        cells: this.cellsTo2DArray(cells, game.rows, game.cols),
+      });
     });
-
-    return players.map(({ game }) => this.formatGame({ game, cells: this.cellsTo2DArray(game.cells, game.rows, game.cols) }));
   }
 }

@@ -3,7 +3,7 @@ import { GraphQLModule } from '@nestjs/graphql';
 import { ApolloDriver, ApolloDriverConfig } from '@nestjs/apollo';
 import { join } from 'path';
 import { PubSubModule } from './pubsub.module';
-import { PrismaModule } from './prisma.module';
+import { MemoryStore } from './stores/memory.store';
 import { UserModule } from './modules/user/user.module';
 import { GameModule } from './modules/game/game.module';
 
@@ -25,7 +25,7 @@ import { GameModule } from './modules/game/game.module';
       },
     }),
     PubSubModule,
-    PrismaModule,
+    MemoryStore,
     UserModule,
     GameModule,
   ],
