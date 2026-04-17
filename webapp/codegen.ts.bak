@@ -1,0 +1,19 @@
+import { CodegenConfig } from "@graphql-codegen/cli";
+import path from "path";
+
+const config: CodegenConfig = {
+  schema: path.resolve(__dirname, "../contract/schema.graphql"),
+  documents: [
+    "src/**/*.{graphql,ts,tsx}",
+  ],
+  generates: {
+    "src/gql/": {
+      preset: "client",
+    },
+    "../contract/schema.graphql": {
+      plugins: ["schema-ast"],
+    },
+  },
+};
+
+export default config;

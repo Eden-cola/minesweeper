@@ -1,0 +1,116 @@
+type Cell {
+  adjacentMines: Int!
+  col: Int!
+  isFlagged: Boolean!
+  isMine: Boolean!
+  isRevealed: Boolean!
+  row: Int!
+}
+
+type CellRevealEvent {
+  cell: Cell!
+  gameId: ID!
+  revealedBy: Player!
+  scoreChange: Int!
+  timestamp: DateTime!
+}
+
+input CreateGameInput {
+  cols: Int!
+  mines: Int!
+  rows: Int!
+}
+
+scalar DateTime
+
+type Game {
+  cells: [[Cell!]!]!
+  cols: Int!
+  createdAt: DateTime!
+  id: ID!
+  mines: Int!
+  players: [Player!]!
+  remainingCells: Int!
+  rows: Int!
+  scoreChange: Int!
+  status: GameStatus!
+  updatedAt: DateTime!
+}
+
+type GameStateUpdate {
+  game: Game!
+  gameId: ID!
+  timestamp: DateTime!
+}
+
+enum GameStatus {
+  ABANDONED
+  COMPLETED
+  PLAYING
+  WAITING
+}
+
+scalar JSON
+
+type Mutation {
+  createGame(input: CreateGameInput!): Game!
+  revealCell(input: RevealCellInput!): RevealCellResult!
+  toggleFlag(input: ToggleFlagInput!): Game!
+}
+
+type Player {
+  id: ID!
+  joinedAt: DateTime!
+  score: Int!
+  user: User!
+  userId: ID!
+}
+
+enum PlayerAction {
+  JOINED
+  LEFT
+}
+
+type PlayerUpdate {
+  action: PlayerAction!
+  gameId: ID!
+  player: Player!
+}
+
+type Query {
+  game(id: ID!): Game
+  me: User!
+  myGames: [Game!]!
+  myScore: Int!
+}
+
+input RevealCellInput {
+  col: Int!
+  gameId: ID!
+  row: Int!
+}
+
+type RevealCellResult {
+  cell: Cell!
+  game: Game!
+  scoreChange: Int!
+}
+
+type Subscription {
+  cellRevealed(gameId: ID!): CellRevealEvent!
+  gameStateUpdated(gameId: ID!): GameStateUpdate!
+  playerUpdated(gameId: ID!): PlayerUpdate!
+}
+
+input ToggleFlagInput {
+  col: Int!
+  gameId: ID!
+  row: Int!
+}
+
+type User {
+  createdAt: DateTime!
+  id: ID!
+  name: String!
+  score: Int!
+}

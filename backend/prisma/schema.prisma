@@ -1,0 +1,52 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  name      String
+  score     Int      @default(0)
+  createdAt DateTime @default(now())
+  players   Player[]
+}
+
+model Game {
+  id          String   @id @default(uuid())
+  rows        Int      @default(9)
+  cols        Int      @default(9)
+  mines       Int      @default(10)
+  status      String   @default("WAITING") // WAITING | PLAYING | COMPLETED | ABANDONED
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  players     Player[]
+  cells       Cell[]
+}
+
+model Player {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  score     Int      @default(0)
+  joinedAt  DateTime @default(now())
+  gameId    String
+  game      Game     @relation(fields: [gameId], references: [id])
+}
+
+model Cell {
+  id             String  @id @default(uuid())
+  row            Int
+  col            Int
+  isRevealed     Boolean @default(false)
+  isMine         Boolean @default(false)
+  isFlagged      Boolean @default(false)
+  adjacentMines  Int     @default(0)
+  gameId         String
+  game           Game    @relation(fields: [gameId], references: [id])
+
+  @@unique([gameId, row, col])
+}
