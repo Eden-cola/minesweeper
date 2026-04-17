@@ -1,4 +1,4 @@
-import { Injectable, Global, Module } from '@nestjs/common';
+import { Injectable, Module } from '@nestjs/common';
 
 export interface UserData {
   id: string;
@@ -32,12 +32,12 @@ export interface GameData {
   cols: number;
   mines: number;
   status: string;
+  scoreChange: number;
   createdAt: Date;
   updatedAt: Date;
 }
 
 @Injectable()
-@Global()
 export class MemoryStore {
   private users = new Map<string, UserData>();
   private games = new Map<string, GameData>();
@@ -82,6 +82,7 @@ export class MemoryStore {
       cols,
       mines,
       status: 'WAITING',
+      scoreChange: 0,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
