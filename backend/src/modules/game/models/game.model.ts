@@ -1,4 +1,5 @@
 import { ObjectType, Field, ID, Int } from '@nestjs/graphql';
+import { User } from '../../user/models/user.model';
 
 @ObjectType()
 export class Cell {
@@ -28,6 +29,9 @@ export class Player {
 
   @Field(() => ID)
   userId: string;
+
+  @Field(() => User)
+  user: User;
 
   @Field(() => Int)
   score: number;

@@ -1,6 +1,7 @@
-import { Resolver, Query, Mutation, Subscription, Args, ID, InputType, Field, Int } from '@nestjs/graphql';
+import { Resolver, Query, Mutation, Subscription, Args, ID, InputType, Field, Int, ResolveField, Parent } from '@nestjs/graphql';
+import { User } from '../user/models/user.model';
 import { GameService } from './game.service';
-import { Game, Cell, GameStateUpdate, CellRevealEvent, PlayerUpdate, RevealCellResult } from './models/game.model';
+import { Game, Cell, GameStateUpdate, CellRevealEvent, PlayerUpdate, RevealCellResult, Player } from './models/game.model';
 import { Inject } from '@nestjs/common';
 import { PUB_SUB } from '../../pubsub.module';
 import { PubSub } from 'graphql-subscriptions';
@@ -120,5 +121,15 @@ export class GameResolver {
   })
   playerUpdated() {
     return this.pubSub.asyncIterator('playerUpdated');
+  }
+}
+
+@Resolver(() => Player)
+export class PlayerResolver {
+  constructor(private userService: UserService) {}
+
+  @ResolveField(() => User)
+  async user(@Parent() player: { userId: string }) {
+    return this.userService.findById(player.userId);
   }
 }
